@@ -10,6 +10,9 @@
 | [docs/01_video-insights.md](docs/01_video-insights.md) | 参考動画8本の要点整理と学習ポイント |
 | [docs/02_market-environment-2026.md](docs/02_market-environment-2026.md) | 2026年7月時点の市場環境・規制・トレンド(出典付き) |
 | [docs/03_revenue-strategy.md](docs/03_revenue-strategy.md) | 収益獲得・最大化の実践戦略(モデル選定、AI活用、CRO、90日ロードマップ) |
+| [knowledge/](knowledge/) | **動画8本の詳細学習ノート**(字幕全文の読解にもとづく。商品・数値・プロンプト・手順) |
+| [playbook/01_ai-prompts.md](playbook/01_ai-prompts.md) | 動画で実際に使われたAIプロンプト集(そのまま使える形) |
+| [playbook/02_checklists.md](playbook/02_checklists.md) | 商品選定・CVR・広告テスト/スケール・週次運用の統合チェックリスト |
 
 ## 結論サマリー(2026年7月時点)
 
