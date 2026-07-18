@@ -13,13 +13,19 @@ from __future__ import annotations
 import argparse
 import sys
 
+from datetime import datetime
+from pathlib import Path
+
 from .analytics import report
 from .channels import build_channel
 from .config import Config
 from .listing_gen import ListingGenerator
+from .notify import notify
+from .optimizer import Optimizer
 from .orders import process_orders
 from .pricing import PricingEngine
 from .research import Researcher
+from .shipments import process_shipments
 from .storage import Store
 from .suppliers import build_supplier
 from .sync import sync_listings
@@ -65,6 +71,7 @@ def cmd_publish(root: str) -> None:
             continue
         l.channel_id = channel.publish(l)
         l.status = "active"
+        l.created_at = datetime.now().isoformat(timespec="seconds")
         published += 1
         print(f"  [出品] {l.sku}: {l.title[:30]} @{l.price:.0f}円 (id={l.channel_id})")
     store.save_listings(listings)
@@ -100,11 +107,38 @@ def cmd_orders(root: str) -> None:
           f"手動キュー{stats['queued']}")
 
 
+def cmd_optimize(root: str) -> None:
+    """収益最大化アクションの自動実行(価格実験・赤字停止・出品入替)。"""
+    cfg, store, pricing = _ctx(root)
+    channel = build_channel(cfg)
+    listings = store.load_listings()
+    orders = store.load_orders()
+    print("▶ 自動最適化を実行中...")
+    optimizer = Optimizer(cfg, pricing, store)
+    stats = optimizer.run(listings, orders, channel)
+    store.save_listings(listings)
+    print(f"✔ 最適化: 実験開始{stats['exp_started']} 採用{stats['exp_kept']} "
+          f"撤回{stats['exp_rolled_back']} 赤字停止{stats['loss_delisted']} "
+          f"入替{stats['stale_delisted']}")
+
+
+def cmd_shipments(root: str, csv_file: str) -> None:
+    """追跡番号CSVを取り込み、発送済み登録+顧客通知。"""
+    cfg, store, _ = _ctx(root)
+    channel = build_channel(cfg)
+    orders = store.load_orders()
+    print(f"▶ 出荷CSVを処理中: {csv_file}")
+    stats = process_shipments(Path(csv_file), orders, channel)
+    store.save_orders(orders)
+    print(f"✔ 発送登録{stats['shipped']} 不明{stats['not_found']} スキップ{stats['skipped']}")
+
+
 def cmd_report(root: str) -> None:
     cfg, store, pricing = _ctx(root)
     text = report(store.load_listings(), store.load_orders(), pricing)
     print(text)
     (cfg.output_dir / "report.txt").write_text(text, encoding="utf-8")
+    notify(cfg, text)
 
 
 def cmd_run(root: str) -> None:
@@ -113,6 +147,7 @@ def cmd_run(root: str) -> None:
     cmd_publish(root)
     cmd_sync(root)
     cmd_orders(root)
+    cmd_optimize(root)
     cmd_report(root)
 
 
@@ -120,14 +155,21 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="muzaiko", description="無在庫販売自動化パイプライン")
     parser.add_argument("--root", default=".", help="プロジェクトルート(config.json の場所)")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("research", "publish", "sync", "orders", "report", "run"):
+    for name in ("research", "publish", "sync", "orders", "optimize", "report", "run"):
         sub.add_parser(name)
+    ship = sub.add_parser("shipments")
+    ship.add_argument("--file", default="data/shipments_in.csv",
+                      help="追跡番号CSV(order_id,tracking_number,carrier)")
     args = parser.parse_args(argv)
+    if args.command == "shipments":
+        cmd_shipments(args.root, args.file)
+        return 0
     {
         "research": cmd_research,
         "publish": cmd_publish,
         "sync": cmd_sync,
         "orders": cmd_orders,
+        "optimize": cmd_optimize,
         "report": cmd_report,
         "run": cmd_run,
     }[args.command](args.root)

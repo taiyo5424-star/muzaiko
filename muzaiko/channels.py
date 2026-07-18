@@ -29,6 +29,10 @@ class ChannelBase:
         """未取込の受注を返す。"""
         raise NotImplementedError
 
+    def mark_shipped(self, order: Order) -> None:
+        """チャネル側に発送済み+追跡番号を登録する(対応チャネルのみ)。"""
+        return None
+
 
 class LocalChannel(ChannelBase):
     """ドライラン用チャネル。出品内容をファイルに書き出して確認できる。"""
@@ -138,6 +142,33 @@ class ShopifyChannel(ChannelBase):
                     fee=round(price * int(item["quantity"]) * self.fee_rate, 1),
                 ))
         return orders
+
+
+    def mark_shipped(self, order: Order) -> None:
+        """Shopify Fulfillment Orders API で発送登録+顧客通知。"""
+        shopify_order_id = order.order_id.split("-")[0]
+        try:
+            fo = self._request("GET", f"/orders/{shopify_order_id}/fulfillment_orders.json")
+            open_fos = [x for x in fo.get("fulfillment_orders", [])
+                        if x.get("status") in ("open", "in_progress")]
+            if not open_fos:
+                print(f"  [warn] {order.order_id}: 発送可能なfulfillment_orderがありません")
+                return
+            payload = {
+                "fulfillment": {
+                    "line_items_by_fulfillment_order": [
+                        {"fulfillment_order_id": open_fos[0]["id"]}
+                    ],
+                    "tracking_info": {
+                        "number": order.tracking_number,
+                        "company": order.carrier or "Other",
+                    },
+                    "notify_customer": True,
+                }
+            }
+            self._request("POST", "/fulfillments.json", payload)
+        except RuntimeError as e:
+            print(f"  [warn] {order.order_id}: 発送登録に失敗 {e}")
 
 
 def build_channel(cfg: Config) -> ChannelBase:

@@ -60,25 +60,64 @@ class CsvSupplier(SupplierBase):
 
 
 class AliExpressSupplier(SupplierBase):
-    """AliExpress Open Platform 連携のスタブ。
+    """AliExpress Dropshipping API 仕入先。
 
-    利用するには https://openservice.aliexpress.com でアプリ登録し、
-    Dropshipping API (aliexpress.ds.*) のキーを取得して実装を追加する。
+    data/aliexpress_products.txt の商品IDリストから価格・在庫を取得し、
+    受注時は aliexpress.ds.order.create で自動発注する。
+    ※ 実キー取得後、必ず1商品でテストしてから本運用に入ること。
     """
 
-    def __init__(self, app_key: str, app_secret: str):
-        self.app_key = app_key
-        self.app_secret = app_secret
+    def __init__(self, product_ids_path: Path, shipping_address: dict | None = None):
+        import os
+        from .aliexpress import AliExpressClient
+        self.client = AliExpressClient(
+            os.environ.get("ALIEXPRESS_APP_KEY", ""),
+            os.environ.get("ALIEXPRESS_APP_SECRET", ""),
+            os.environ.get("ALIEXPRESS_ACCESS_TOKEN", ""),
+        )
+        self.product_ids_path = product_ids_path
+        self.shipping_address = shipping_address or {}
+        self._sku_map: dict[str, tuple[str, str]] = {}  # sku -> (product_id, sku_attr)
 
     def fetch_products(self) -> list[SupplierProduct]:
-        raise NotImplementedError(
-            "AliExpress APIキーを設定し、aliexpress.ds.product.get の呼び出しを実装してください"
-        )
+        from .aliexpress import load_product_ids
+        products: list[SupplierProduct] = []
+        for pid in load_product_ids(self.product_ids_path):
+            try:
+                result = self.client.product_get(pid)
+            except Exception as e:
+                print(f"  [warn] AliExpress商品 {pid} の取得に失敗: {e}")
+                continue
+            body = (result.get("aliexpress_ds_product_get_response", {})
+                    .get("result", {}))
+            info = body.get("ae_item_base_info_dto", {})
+            for sku in (body.get("ae_item_sku_info_dtos", {})
+                        .get("ae_item_sku_info_d_t_o", [])):
+                sku_id = f"AE-{pid}-{sku.get('sku_id', '0')}"
+                self._sku_map[sku_id] = (pid, sku.get("sku_attr", ""))
+                products.append(SupplierProduct(
+                    sku=sku_id,
+                    title=info.get("subject", f"AliExpress {pid}"),
+                    cost=float(sku.get("offer_sale_price", sku.get("sku_price", 0))),
+                    stock=int(sku.get("sku_available_stock", 0)),
+                    shipping_days=15,
+                    category=info.get("category_id", ""),
+                    product_url=f"https://www.aliexpress.com/item/{pid}.html",
+                ))
+        return products
 
     def place_order(self, sku: str, qty: int, shipping_address: dict) -> str:
-        raise NotImplementedError(
-            "aliexpress.ds.order.create の呼び出しを実装してください"
-        )
+        mapped = self._sku_map.get(sku)
+        if mapped is None and sku.startswith("AE-"):
+            parts = sku.split("-", 2)
+            mapped = (parts[1], "") if len(parts) >= 2 else None
+        if mapped is None:
+            return ""
+        address = shipping_address or self.shipping_address
+        if not address:
+            return ""  # 配送先未設定なら手動キューに回す
+        pid, sku_attr = mapped
+        return self.client.order_create(pid, sku_attr, qty, address)
 
 
 def build_supplier(cfg: Config) -> SupplierBase:
@@ -86,9 +125,5 @@ def build_supplier(cfg: Config) -> SupplierBase:
     if stype == "csv":
         return CsvSupplier(cfg.root / cfg["supplier"]["feed_path"])
     if stype == "aliexpress":
-        import os
-        return AliExpressSupplier(
-            os.environ.get("ALIEXPRESS_APP_KEY", ""),
-            os.environ.get("ALIEXPRESS_APP_SECRET", ""),
-        )
+        return AliExpressSupplier(cfg.root / "data" / "aliexpress_products.txt")
     raise ValueError(f"未対応の仕入先タイプ: {stype}")

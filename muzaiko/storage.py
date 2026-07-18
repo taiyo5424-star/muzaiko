@@ -26,6 +26,18 @@ class Store:
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
+    # --- generic json (実験記録などの補助状態) ---
+    def load_json(self, name: str, default):
+        f = self.state_dir / name
+        if not f.exists():
+            return default
+        return json.loads(f.read_text(encoding="utf-8"))
+
+    def save_json(self, name: str, data) -> None:
+        (self.state_dir / name).write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
     # --- orders ---
     def load_orders(self) -> dict[str, Order]:
         if not self.orders_file.exists():

@@ -49,6 +49,7 @@ class Listing:
     score: float = 0.0           # リサーチ時のスコア
     image_url: str = ""
     category: str = ""
+    created_at: str = ""         # 出品日時 ISO8601
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -71,6 +72,8 @@ class Order:
     status: str = "new"          # new | to_purchase | purchased | shipped | done | cancelled
     supplier_order_id: str = ""
     customer_note: str = ""
+    tracking_number: str = ""
+    carrier: str = ""
 
     @property
     def revenue(self) -> float:

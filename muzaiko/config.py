@@ -35,6 +35,18 @@ DEFAULTS: dict[str, Any] = {
         "use_llm": False,                   # ANTHROPIC_API_KEY があれば説明文をLLM生成
         "shop_name": "muzaiko store",
     },
+    "optimizer": {
+        "enabled": True,
+        "price_step": 0.07,                 # 値上げ実験の幅(7%)
+        "min_sales_to_test": 3,             # 実験開始に必要な直近販売数
+        "eval_window_days": 7,              # 実験の評価期間(日)
+        "stale_days": 14,                   # 販売ゼロで入替対象になる日数
+        "auto_delist_loss": True,           # 赤字SKUの自動停止
+    },
+    "notify": {
+        "type": "slack",                    # slack | discord
+        "webhook_env": "MUZAIKO_WEBHOOK_URL",
+    },
     "state_dir": "state",
     "output_dir": "out",
 }

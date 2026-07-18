@@ -43,8 +43,10 @@
 | タイトル・説明文・価格の生成 | ✅ 全自動(`publish`、LLM生成もオプションで可) |
 | 価格改定・在庫同期・売り越し防止 | ✅ 全自動(`sync`、毎日実行推奨) |
 | 受注の取込 | ✅ 全自動(`orders`) |
-| 仕入先への発注 | △ API対応仕入先なら自動。それ以外は発注キューCSVを出力し人間が発注 |
-| 収益分析・改善提案 | ✅ 全自動(`report`) |
+| 仕入先への発注 | △ AliExpress APIなら自動発注。それ以外は発注キューCSVを出力し人間が発注 |
+| **収益最適化(値上げ実験・赤字停止・出品入替)** | ✅ 全自動(`optimize`) |
+| 発送登録・追跡番号・顧客への発送通知 | ✅ 半自動(`shipments`: 追跡番号CSVを置くだけ) |
+| 収益分析・改善提案・Slack/Discord通知 | ✅ 全自動(`report`) |
 | **アカウント開設・決済設定・法的表記・顧客対応** | ❌ 人間(あなた)の仕事 |
 
 > 収益は保証されません。無在庫販売は「薄利×回転×継続改善」のビジネスです。
@@ -126,13 +128,44 @@ python -m muzaiko.cli run
 
 - **価格エンジン** (`pricing.py`): 手数料控除後に目標粗利率(既定35%)を確保する価格を自動算出。
   末尾◯80円の心理的価格。原価が上がって粗利率が下限(12%)を割ると自動値上げ。
+- **自動価格実験** (`optimizer.py`): 直近7日で3個以上売れたSKUは自動で+7%の値上げ実験を開始。
+  7日後に売上レート(販売速度×価格)を評価し、維持できていれば新価格を採用、
+  落ちていれば旧価格に自動ロールバック。採用後はクールダウンを挟んで段階的に上限を探る。
+- **自動入替** (`optimizer.py`): 赤字SKUは自動停止。14日間売れない出品は自動で枠を解放し、
+  次回リサーチで新商品と入れ替わる。
 - **売り越し防止** (`sync.py`): 仕入先在庫切れを検知した瞬間に出品を自動停止。在庫復活で自動再開。
 - **リサーチスコア** (`research.py`): 粗利額60点+在庫の厚さ20点+配送速度20点で採点し上位のみ出品。
-- **改善アクション** (`analytics.py`): レポートが毎回、
-  「売れ筋の値上げテスト」「赤字SKUの停止」「動かない出品の入替」を具体的に提案。
+- **日次通知** (`notify.py`): 環境変数 `MUZAIKO_WEBHOOK_URL` にSlack/DiscordのWebhook URLを
+  設定すると、毎日のレポートが自動送信される。
 
-**運用のコツ**: 週1回、レポートの推奨アクションに従って `config.json` の
-`target_margin_rate` や仕入先フィードを調整 → 出品を入れ替える。このループの継続が利益の源泉です。
+つまり `run` を毎日回すだけで「売れる商品に絞り、売れる限界まで値段を上げ、
+死に筋を捨てて新商品を試す」ループが自動で回り続けます。
+
+## 出荷オペレーション
+
+仕入先(または発送代行)から届く追跡番号の一覧をCSVで置いて1コマンド:
+
+```csv
+# data/shipments_in.csv
+order_id,tracking_number,carrier
+123456789-111,JP123456789,ヤマト運輸
+```
+
+```bash
+python -m muzaiko.cli shipments --file data/shipments_in.csv
+```
+
+Shopify運用時は Fulfillment API で発送登録+顧客への発送通知メールまで自動実行されます。
+
+## AliExpress 自動発注(任意)
+
+1. https://openservice.aliexpress.com でアプリ登録(Drop Shipping カテゴリ)し、
+   `ALIEXPRESS_APP_KEY` / `ALIEXPRESS_APP_SECRET` / `ALIEXPRESS_ACCESS_TOKEN` を設定
+2. `data/aliexpress_products.txt` に扱いたい商品ID(1行1ID)を記載
+3. `config.json` で `"supplier": {"type": "aliexpress"}`
+
+これで `research` が価格・在庫をAPIから取得し、`orders` が自動発注まで行います。
+※ 署名実装は公開仕様準拠ですが、**実キー取得後に必ず1商品でテスト**してください。
 
 ## 設定リファレンス(config.json)
 
@@ -145,6 +178,11 @@ python -m muzaiko.cli run
 | `pricing.min_margin_rate` | 値上げ発動ラインの粗利率 | 0.12 |
 | `channel.fee_rate` | 販売+決済手数料の合計率 | 0.10 |
 | `listing.use_llm` | Claude による説明文生成(要 `ANTHROPIC_API_KEY` と `pip install anthropic`) | false |
+| `optimizer.price_step` | 値上げ実験の幅 | 0.07 |
+| `optimizer.min_sales_to_test` | 実験開始に必要な直近販売数 | 3 |
+| `optimizer.eval_window_days` | 実験の評価期間(日) | 7 |
+| `optimizer.stale_days` | 販売ゼロで入替対象になる日数 | 14 |
+| `notify.type` | 通知先(slack / discord) | slack |
 
 ## ディレクトリ構成
 
@@ -159,6 +197,10 @@ muzaiko/
 │   ├── pricing.py     # 価格エンジン
 │   ├── sync.py        # 在庫・価格同期
 │   ├── orders.py      # 受注→発注変換
+│   ├── optimizer.py   # 自動最適化(価格実験・赤字停止・入替)
+│   ├── shipments.py   # 追跡番号取込・発送登録
+│   ├── aliexpress.py  # AliExpress Dropshipping APIクライアント
+│   ├── notify.py      # Slack/Discord通知
 │   └── analytics.py   # 収益レポート
 ├── data/              # 仕入先フィード置き場
 ├── state/             # 出品・受注の状態(JSON、自動生成)
@@ -168,9 +210,10 @@ muzaiko/
 
 ## ロードマップ(拡張ポイント)
 
-- [ ] AliExpress Dropshipping API 実装(自動発注の完成)
+- [x] AliExpress Dropshipping API 実装(自動発注)
+- [x] 追跡番号の自動登録と顧客通知(`shipments`)
+- [x] Slack/Discord への日次レポート通知(`notify.py`)
+- [x] 自動価格実験によるリプライシング(`optimizer.py`)
 - [ ] NETSEA など国内卸のフィード自動取得
 - [ ] 競合価格スクレイピングによる動的リプライシング
 - [ ] 楽天市場 / Yahoo!ショッピング / eBay チャネルアダプタ
-- [ ] 追跡番号の自動登録と顧客通知
-- [ ] LINE/Slack への日次レポート通知
