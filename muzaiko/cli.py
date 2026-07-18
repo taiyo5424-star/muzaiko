@@ -13,6 +13,8 @@ from __future__ import annotations
 import argparse
 import sys
 
+import csv
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -36,6 +38,45 @@ def _ctx(root: str):
     store = Store(cfg.state_dir)
     pricing = PricingEngine(cfg)
     return cfg, store, pricing
+
+
+def _export_listings_csv(listings, path: Path) -> None:
+    """アクティブ出品を一括登録用CSVに書き出す(BASE/STORESの管理画面や
+    各種一括登録ツールへ貼り付けて使う。API未接続のPhase 0でも出品作業を短縮)。"""
+    rows = [l for l in listings.values() if l.status == "active"]
+    if not rows:
+        return
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:  # Excelで文字化けしないBOM付き
+        writer = csv.writer(f)
+        writer.writerow(["sku", "title", "price", "stock", "category",
+                        "image_url", "description"])
+        for l in rows:
+            writer.writerow([l.sku, l.title, int(l.price), l.stock, l.category,
+                             l.image_url, l.description.replace("\n", " / ")])
+    print(f"  [出力] 一括出品用CSV → {path}")
+
+
+def cmd_init(root: str) -> None:
+    """初期セットアップ: config.json を作成し、次にやることを案内する。"""
+    cfg_path = Path(root) / "config.json"
+    example = Path(root) / "config.example.json"
+    if cfg_path.exists():
+        print(f"config.json は既に存在します: {cfg_path}")
+    elif example.exists():
+        shutil.copy(example, cfg_path)
+        print(f"✔ {cfg_path} を作成しました")
+    else:
+        print("config.example.json が見つかりません")
+        return
+    print("""
+次にやること:
+  1. 仕入先CSVを data/ に置き、config.json の supplier.feed_path を変更
+     (国内卸のCSVは supplier.encoding を "cp932"、列名は supplier.column_map で対応付け)
+  2. python -m muzaiko.cli run   ← まずはドライランで動作確認
+  3. 販路が決まったら channel.type を "shopify" か "base" に変更
+     - 詳細手順と手数料の実勢は README.md / STRATEGY.md を参照
+  4. 特定商取引法ページは docs/TOKUSHOHO_TEMPLATE.md の穴埋めで作成
+""")
 
 
 def cmd_research(root: str) -> None:
@@ -75,6 +116,7 @@ def cmd_publish(root: str) -> None:
         published += 1
         print(f"  [出品] {l.sku}: {l.title[:30]} @{l.price:.0f}円 (id={l.channel_id})")
     store.save_listings(listings)
+    _export_listings_csv(listings, cfg.output_dir / "listings_export.csv")
     print(f"✔ {published}件を出品しました(チャネル: {cfg['channel']['type']})")
 
 
@@ -90,6 +132,7 @@ def cmd_sync(root: str) -> None:
     products = supplier.fetch_products()
     stats = sync_listings(listings, products, pricing, channel)
     store.save_listings(listings)
+    _export_listings_csv(listings, cfg.output_dir / "listings_export.csv")
     print(f"✔ 同期完了: 改定{stats['repriced']} 停止{stats['paused']} "
           f"再開{stats['reactivated']} 在庫更新{stats['stock_updated']}")
 
@@ -155,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="muzaiko", description="無在庫販売自動化パイプライン")
     parser.add_argument("--root", default=".", help="プロジェクトルート(config.json の場所)")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("research", "publish", "sync", "orders", "optimize", "report", "run"):
+    for name in ("init", "research", "publish", "sync", "orders", "optimize", "report", "run"):
         sub.add_parser(name)
     ship = sub.add_parser("shipments")
     ship.add_argument("--file", default="data/shipments_in.csv",
@@ -165,6 +208,7 @@ def main(argv: list[str] | None = None) -> int:
         cmd_shipments(args.root, args.file)
         return 0
     {
+        "init": cmd_init,
         "research": cmd_research,
         "publish": cmd_publish,
         "sync": cmd_sync,

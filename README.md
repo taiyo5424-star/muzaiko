@@ -61,7 +61,7 @@
 
 ```bash
 cd muzaiko
-cp config.example.json config.json   # 省略可(デフォルト設定で動く)
+python -m muzaiko.cli init       # config.json を作成し、次にやることを表示
 
 python -m muzaiko.cli research   # サンプル仕入先フィードから候補選定
 python -m muzaiko.cli publish    # out/listings/ に出品データを生成
@@ -89,8 +89,15 @@ python -m muzaiko.cli run
 
 **固定費0円で始める場合(推奨・詳細はSTRATEGY.md)**
 1. **TopSeller** おためしプラン(永年無料・5商品)に登録し、商品CSVを `data/` に配置
+   - 国内卸のCSVはShift_JISが多い → `supplier.encoding: "cp932"`
+   - 列名が違っても `supplier.column_map` で対応付け(例: `{"sku": "商品コード", "cost": "卸価格"}`)
 2. **BASE** スタンダードプラン(月額0円)で開店し、特定商取引法ページを作成
-3. `config.json` の `channel.fee_rate` を `0.07` に設定(BASEの手数料実勢)
+   (テンプレ: [docs/TOKUSHOHO_TEMPLATE.md](docs/TOKUSHOHO_TEMPLATE.md))
+3. 出品は2通り:
+   - **手動**: `publish` が出力する `out/listings_export.csv` を管理画面から一括登録
+   - **API**: BASE Developersでアプリ登録し `BASE_CLIENT_ID` / `BASE_CLIENT_SECRET` /
+     `BASE_REFRESH_TOKEN` を設定 → `channel.type: "base"` で出品・受注取込まで自動
+4. `channel.fee_rate` は `0.07`(BASEの手数料実勢)
 
 **本格運用(月商10万円〜)**
 1. **Shopify** Basic(年払い ¥3,650/月)で開店
@@ -199,8 +206,8 @@ Shopify運用時は Fulfillment API で発送登録+顧客への発送通知メ�
 muzaiko/
 ├── muzaiko/           # パッケージ本体
 │   ├── cli.py         # コマンド入口
-│   ├── suppliers.py   # 仕入先アダプタ(CSV / AliExpressスタブ)
-│   ├── channels.py    # 販売チャネル(local / Shopify)
+│   ├── suppliers.py   # 仕入先アダプタ(CSV: 列マッピング/cp932対応、AliExpress)
+│   ├── channels.py    # 販売チャネル(local / Shopify / BASE)
 │   ├── research.py    # 商品選定・スコアリング
 │   ├── listing_gen.py # 出品コピー生成(テンプレ / LLM)
 │   ├── pricing.py     # 価格エンジン
@@ -212,10 +219,13 @@ muzaiko/
 │   ├── notify.py      # Slack/Discord通知
 │   └── analytics.py   # 収益レポート
 ├── data/              # 仕入先フィード置き場
+├── docs/              # 特商法テンプレ・運用ランブック
 ├── state/             # 出品・受注の状態(JSON、自動生成)
-├── out/               # レポート・発注キュー・ドライラン出品(自動生成)
-└── tests/             # スモークテスト
+├── out/               # レポート・発注キュー・一括出品CSV(自動生成)
+└── tests/             # テスト
 ```
+
+日々の運用手順(毎日5分・週1で30分)は [docs/OPERATIONS.md](docs/OPERATIONS.md) を参照。
 
 ## ロードマップ(拡張ポイント)
 
@@ -223,6 +233,7 @@ muzaiko/
 - [x] 追跡番号の自動登録と顧客通知(`shipments`)
 - [x] Slack/Discord への日次レポート通知(`notify.py`)
 - [x] 自動価格実験によるリプライシング(`optimizer.py`)
-- [ ] NETSEA など国内卸のフィード自動取得
+- [x] BASE チャネルアダプタ+一括出品CSVエクスポート
+- [x] 国内卸CSVの列マッピング・Shift_JIS対応(NETSEA/TopSellerのCSVをそのまま利用可)
 - [ ] 競合価格スクレイピングによる動的リプライシング
-- [ ] 楽天市場 / Yahoo!ショッピング / eBay チャネルアダプタ
+- [ ] 楽天市場 / eBay チャネルアダプタ(Yahoo!は規約禁止のため対象外)

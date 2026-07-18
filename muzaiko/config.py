@@ -11,9 +11,11 @@ DEFAULTS: dict[str, Any] = {
     "supplier": {
         "type": "csv",                      # csv | aliexpress(要API)
         "feed_path": "data/sample_supplier.csv",
+        "encoding": "utf-8-sig",            # 国内卸のCSVは "cp932"(Shift_JIS)が多い
+        "column_map": {},                   # 例: {"sku": "商品コード", "cost": "卸価格"}
     },
     "channel": {
-        "type": "local",                    # local(ドライラン) | shopify
+        "type": "local",                    # local(ドライラン) | shopify | base
         "shopify_domain": "",               # 例: mystore.myshopify.com
         "shopify_token_env": "SHOPIFY_ACCESS_TOKEN",
         "fee_rate": 0.07,                   # 販売+決済手数料の合計率(BASE無料プラン実勢。Shopify=0.04, eBay=0.18)

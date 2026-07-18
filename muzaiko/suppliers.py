@@ -22,36 +22,59 @@ class SupplierBase:
 
 
 class CsvSupplier(SupplierBase):
-    """CSVフィード仕入先。列: sku,title,cost,stock,shipping_cost,shipping_days,weight_g,category,image_url,product_url"""
+    """CSVフィード仕入先。
 
-    REQUIRED = {"sku", "title", "cost", "stock"}
+    標準列: sku,title,cost,stock,shipping_cost,shipping_days,weight_g,category,image_url,product_url
+    国内卸(TopSeller/NETSEA等)の独自フォーマットは config.supplier.column_map で
+    「標準列名 → フィードの列名」を対応付ければコード変更なしで読める。
+    文字コードは config.supplier.encoding(Shift_JIS系は "cp932")。
+    """
 
-    def __init__(self, feed_path: Path):
+    REQUIRED = ("sku", "title", "cost", "stock")
+
+    def __init__(self, feed_path: Path, encoding: str = "utf-8-sig",
+                 column_map: dict[str, str] | None = None):
         self.feed_path = feed_path
+        self.encoding = encoding
+        self.column_map = column_map or {}
+
+    def _get(self, row: dict, field: str) -> str:
+        return (row.get(self.column_map.get(field, field)) or "").strip()
+
+    @staticmethod
+    def _num(value: str) -> float:
+        """'1,980円' のような表記も数値化する。"""
+        cleaned = value.replace(",", "").replace("円", "").strip()
+        return float(cleaned) if cleaned else 0.0
 
     def fetch_products(self) -> list[SupplierProduct]:
         products: list[SupplierProduct] = []
-        with open(self.feed_path, encoding="utf-8") as f:
+        with open(self.feed_path, encoding=self.encoding, newline="") as f:
             reader = csv.DictReader(f)
-            missing = self.REQUIRED - set(reader.fieldnames or [])
+            fields = set(reader.fieldnames or [])
+            missing = [c for c in self.REQUIRED
+                       if self.column_map.get(c, c) not in fields]
             if missing:
-                raise ValueError(f"フィードに必須列がありません: {missing}")
+                raise ValueError(
+                    f"フィードに必須列がありません: {missing} "
+                    f"(column_map で列名を対応付けてください。実際の列: {sorted(fields)})"
+                )
             for row in reader:
                 try:
                     products.append(SupplierProduct(
-                        sku=row["sku"].strip(),
-                        title=row["title"].strip(),
-                        cost=float(row["cost"]),
-                        stock=int(row["stock"]),
-                        shipping_cost=float(row.get("shipping_cost") or 0),
-                        shipping_days=int(row.get("shipping_days") or 7),
-                        weight_g=int(row.get("weight_g") or 0),
-                        category=(row.get("category") or "").strip(),
-                        image_url=(row.get("image_url") or "").strip(),
-                        product_url=(row.get("product_url") or "").strip(),
+                        sku=self._get(row, "sku"),
+                        title=self._get(row, "title"),
+                        cost=self._num(self._get(row, "cost")),
+                        stock=int(self._num(self._get(row, "stock"))),
+                        shipping_cost=self._num(self._get(row, "shipping_cost")),
+                        shipping_days=int(self._num(self._get(row, "shipping_days")) or 7),
+                        weight_g=int(self._num(self._get(row, "weight_g"))),
+                        category=self._get(row, "category"),
+                        image_url=self._get(row, "image_url"),
+                        product_url=self._get(row, "product_url"),
                     ))
-                except (ValueError, KeyError) as e:
-                    print(f"  [skip] 行の解析に失敗 sku={row.get('sku')}: {e}")
+                except ValueError as e:
+                    print(f"  [skip] 行の解析に失敗 sku={self._get(row, 'sku')}: {e}")
         return products
 
     def place_order(self, sku: str, qty: int, shipping_address: dict) -> str:
@@ -123,7 +146,11 @@ class AliExpressSupplier(SupplierBase):
 def build_supplier(cfg: Config) -> SupplierBase:
     stype = cfg["supplier"]["type"]
     if stype == "csv":
-        return CsvSupplier(cfg.root / cfg["supplier"]["feed_path"])
+        return CsvSupplier(
+            cfg.root / cfg["supplier"]["feed_path"],
+            encoding=cfg["supplier"].get("encoding", "utf-8-sig"),
+            column_map=cfg["supplier"].get("column_map", {}),
+        )
     if stype == "aliexpress":
         return AliExpressSupplier(cfg.root / "data" / "aliexpress_products.txt")
     raise ValueError(f"未対応の仕入先タイプ: {stype}")

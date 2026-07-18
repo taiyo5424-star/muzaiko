@@ -1,12 +1,15 @@
 """販売チャネルアダプタ。
 
-- LocalChannel: ドライラン。出品は out/ にHTML/JSONとして書き出し、受注は state/incoming_orders.json から取り込む。
+- LocalChannel: ドライラン。出品は out/ にJSONとして書き出し、受注は state/incoming_orders.json から取り込む。
 - ShopifyChannel: Shopify Admin REST API。SHOPIFY_ACCESS_TOKEN 設定で実出品・実受注取得。
+- BaseECChannel: BASE API。無料プランで使えるPhase 0推奨チャネル(要OAuthアプリ登録)。
 """
 from __future__ import annotations
 
 import json
+import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -171,6 +174,101 @@ class ShopifyChannel(ChannelBase):
             print(f"  [warn] {order.order_id}: 発送登録に失敗 {e}")
 
 
+class BaseECChannel(ChannelBase):
+    """BASE(thebase.com)API アダプタ。
+
+    必要な環境変数:
+      BASE_CLIENT_ID / BASE_CLIENT_SECRET / BASE_REFRESH_TOKEN
+    BASE Developers(developers.thebase.in)でアプリ登録し、
+    read_items / write_items / read_orders スコープで認可して取得する。
+    アクセストークンは短命のため refresh_token グラントで毎回取得する。
+    ※ API仕様は実アカウントで1商品テストしてから本運用に入ること。
+    """
+
+    API = "https://api.thebase.in"
+
+    def __init__(self, fee_rate: float):
+        self.client_id = os.environ.get("BASE_CLIENT_ID", "")
+        self.client_secret = os.environ.get("BASE_CLIENT_SECRET", "")
+        self.refresh_token = os.environ.get("BASE_REFRESH_TOKEN", "")
+        if not (self.client_id and self.client_secret and self.refresh_token):
+            raise ValueError(
+                "BASE利用には環境変数 BASE_CLIENT_ID / BASE_CLIENT_SECRET / "
+                "BASE_REFRESH_TOKEN が必要です(developers.thebase.in でアプリ登録)"
+            )
+        self.fee_rate = fee_rate
+        self._access_token = ""
+
+    def _token(self) -> str:
+        if self._access_token:
+            return self._access_token
+        data = urllib.parse.urlencode({
+            "grant_type": "refresh_token",
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+            "refresh_token": self.refresh_token,
+        }).encode()
+        req = urllib.request.Request(f"{self.API}/1/oauth/token", data=data, method="POST")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            self._access_token = json.loads(resp.read().decode())["access_token"]
+        return self._access_token
+
+    def _request(self, method: str, path: str, form: dict | None = None) -> dict:
+        req = urllib.request.Request(
+            f"{self.API}{path}",
+            method=method,
+            headers={"Authorization": f"Bearer {self._token()}"},
+            data=urllib.parse.urlencode(form).encode() if form is not None else None,
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(f"BASE API error {e.code}: {e.read().decode()[:500]}") from e
+
+    def publish(self, listing: Listing) -> str:
+        result = self._request("POST", "/1/items/add", {
+            "title": listing.title,
+            "detail": listing.description,
+            "price": int(listing.price),
+            "stock": listing.stock,
+            "visible": 1,
+            "identifier": listing.sku,
+        })
+        return str(result["item"]["item_id"])
+
+    def update(self, listing: Listing) -> None:
+        if not listing.channel_id or listing.channel_id.startswith("local-"):
+            return
+        self._request("POST", "/1/items/edit", {
+            "item_id": listing.channel_id,
+            "price": int(listing.price),
+            "stock": listing.stock if listing.status == "active" else 0,
+            "visible": 1 if listing.status == "active" else 0,
+        })
+
+    def fetch_orders(self) -> list[Order]:
+        result = self._request("GET", "/1/orders?limit=50")
+        orders: list[Order] = []
+        for o in result.get("orders", []):
+            key = o.get("unique_key", "")
+            if not key:
+                continue
+            detail = self._request("GET", f"/1/orders/detail/{key}")
+            for item in detail.get("order", {}).get("order_items", []):
+                price = float(item.get("price", 0))
+                qty = int(item.get("amount", 1))
+                orders.append(Order(
+                    order_id=f"{key}-{item.get('order_item_id', '')}",
+                    sku=str(item.get("identifier") or item.get("item_id") or ""),
+                    qty=qty,
+                    sale_price=price,
+                    ordered_at=str(o.get("ordered", "")),
+                    fee=round(price * qty * self.fee_rate, 1),
+                ))
+        return orders
+
+
 def build_channel(cfg: Config) -> ChannelBase:
     ctype = cfg["channel"]["type"]
     if ctype == "local":
@@ -181,4 +279,6 @@ def build_channel(cfg: Config) -> ChannelBase:
             cfg.shopify_token(),
             cfg["channel"]["fee_rate"],
         )
+    if ctype == "base":
+        return BaseECChannel(cfg["channel"]["fee_rate"])
     raise ValueError(f"未対応のチャネルタイプ: {ctype}")
