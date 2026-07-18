@@ -18,9 +18,11 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
+from .accounting import export_ledger
 from .analytics import report
 from .channels import build_channel
 from .config import Config
+from .content import generate_weekly_posts
 from .listing_gen import ListingGenerator
 from .notify import notify
 from .optimizer import Optimizer
@@ -176,11 +178,54 @@ def cmd_shipments(root: str, csv_file: str) -> None:
     print(f"✔ 発送登録{stats['shipped']} 不明{stats['not_found']} スキップ{stats['skipped']}")
 
 
+def cmd_content(root: str) -> None:
+    """SNS投稿ドラフト(2週間分の週間プラン)を生成。"""
+    cfg, store, _ = _ctx(root)
+    text = generate_weekly_posts(cfg, store.load_listings())
+    path = cfg.output_dir / "sns_posts.md"
+    path.write_text(text, encoding="utf-8")
+    print(f"✔ SNS投稿プランを出力: {path}")
+
+
+def cmd_ledger(root: str) -> None:
+    """確定申告・記帳用の仕訳CSVを出力。"""
+    cfg, store, _ = _ctx(root)
+    path = cfg.output_dir / "ledger.csv"
+    n = export_ledger(store.load_orders(), store.load_listings(), path)
+    print(f"✔ 仕訳CSVを出力: {path}({n}行)")
+
+
+def _record_kpi(store: Store, listings, orders) -> None:
+    """日次KPIスナップショットを追記(同日分は上書き)。ダッシュボードの元データ。"""
+    sold = [o for o in orders.values() if o.status != "cancelled"]
+    revenue = sum(o.revenue for o in sold)
+    fees = sum(o.fee for o in sold)
+    cogs = sum((listings[o.sku].cost if o.sku in listings else 0.0) * o.qty for o in sold)
+    snapshot = {
+        "date": datetime.now().date().isoformat(),
+        "active_listings": sum(1 for l in listings.values() if l.status == "active"),
+        "orders": len(sold),
+        "revenue": round(revenue),
+        "fees": round(fees),
+        "cogs": round(cogs),
+        "profit": round(revenue - fees - cogs),
+    }
+    history = store.load_json("kpi_history.json", [])
+    history = [h for h in history if h.get("date") != snapshot["date"]]
+    history.append(snapshot)
+    store.save_json("kpi_history.json", history)
+
+
 def cmd_report(root: str) -> None:
     cfg, store, pricing = _ctx(root)
-    text = report(store.load_listings(), store.load_orders(), pricing)
+    listings = store.load_listings()
+    orders = store.load_orders()
+    text = report(listings, orders, pricing)
     print(text)
     (cfg.output_dir / "report.txt").write_text(text, encoding="utf-8")
+    _record_kpi(store, listings, orders)
+    from .dashboard import render_dashboard
+    render_dashboard(store, cfg.output_dir / "dashboard.html")
     notify(cfg, text)
 
 
@@ -198,7 +243,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="muzaiko", description="無在庫販売自動化パイプライン")
     parser.add_argument("--root", default=".", help="プロジェクトルート(config.json の場所)")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("init", "research", "publish", "sync", "orders", "optimize", "report", "run"):
+    for name in ("init", "research", "publish", "sync", "orders", "optimize",
+                 "content", "ledger", "report", "run"):
         sub.add_parser(name)
     ship = sub.add_parser("shipments")
     ship.add_argument("--file", default="data/shipments_in.csv",
@@ -214,6 +260,8 @@ def main(argv: list[str] | None = None) -> int:
         "sync": cmd_sync,
         "orders": cmd_orders,
         "optimize": cmd_optimize,
+        "content": cmd_content,
+        "ledger": cmd_ledger,
         "report": cmd_report,
         "run": cmd_run,
     }[args.command](args.root)
