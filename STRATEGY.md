@@ -94,9 +94,18 @@ Phase 0 構成(TopSeller無料 + BASE無料、fee_rate 7%)での例:
 
 - [ ] TopSeller おためしプラン登録(無料)
 - [ ] BASE スタンダード開設(無料)+ 特定商取引法ページ作成
+      (テンプレ: docs/TOKUSHOHO_TEMPLATE.md の穴埋め)
 - [ ] TopSellerの商品データ(CSV)を `data/` に配置し `config.json` を設定
+      (`supplier.encoding: "cp932"`、列名は `supplier.column_map` で対応付け)
 - [ ] `python -m muzaiko.cli run` で5商品を出品(fee_rate: 0.07)
-- [ ] SNSアカウント(Instagram/X)開設、出品カテゴリに合わせて週3投稿
-- [ ] 2週間ごとにレポート確認 → optimizer任せの入替を監督
+      → API未接続なら `out/listings_export.csv` を管理画面から一括登録
+- [ ] SNSアカウント(Instagram/X)開設 → `python -m muzaiko.cli content` の
+      ドラフト(週3本×2週分)を予約投稿
+- [ ] 日々の運用は docs/OPERATIONS.md のとおり(毎日5分・週1で30分)
+- [ ] 2週間ごとに `out/dashboard.html` とレポート確認 → optimizer任せの入替を監督
 - [ ] 月商10万円到達で Phase 1(Shopify移行・NETSEA併用・商品数拡大)を判断
+- [ ] Phase 2(eBay輸出)は `muzaiko/ebay.py` 実装済み。developer.ebay.com で
+      キー取得 → Sandboxテスト → `channel.type: "ebay"`(fee_rate: 0.18)
 - [ ] Amazon参入を検討する場合はセラー登録後にポリシーG201808410全文を精読
+- [ ] 利益が出始めたら `python -m muzaiko.cli ledger` の仕訳CSVで記帳、
+      開業届+青色申告承認申請を検討

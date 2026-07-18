@@ -281,4 +281,7 @@ def build_channel(cfg: Config) -> ChannelBase:
         )
     if ctype == "base":
         return BaseECChannel(cfg["channel"]["fee_rate"])
+    if ctype == "ebay":
+        from .ebay import EbayChannel
+        return EbayChannel(cfg["channel"]["fee_rate"], cfg["channel"].get("ebay", {}))
     raise ValueError(f"未対応のチャネルタイプ: {ctype}")

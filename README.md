@@ -49,8 +49,10 @@
 | 仕入先への発注 | △ AliExpress APIなら自動発注。それ以外は発注キューCSVを出力し人間が発注 |
 | **収益最適化(値上げ実験・赤字停止・出品入替)** | ✅ 全自動(`optimize`) |
 | 発送登録・追跡番号・顧客への発送通知 | ✅ 半自動(`shipments`: 追跡番号CSVを置くだけ) |
-| 収益分析・改善提案・Slack/Discord通知 | ✅ 全自動(`report`) |
-| **アカウント開設・決済設定・法的表記・顧客対応** | ❌ 人間(あなた)の仕事 |
+| 収益分析・改善提案・Slack/Discord通知 | ✅ 全自動(`report`、KPIダッシュボードも自動更新) |
+| SNS集客用の投稿文作成 | ✅ 全自動(`content`: 週3本×2週間分のドラフト生成) |
+| 記帳・確定申告用の仕訳出力 | ✅ 全自動(`ledger`) |
+| **アカウント開設・決済設定・法的表記・顧客対応** | ❌ 人間(あなた)の仕事(定型文は [docs/CUSTOMER_SERVICE_TEMPLATES.md](docs/CUSTOMER_SERVICE_TEMPLATES.md)) |
 
 > 収益は保証されません。無在庫販売は「薄利×回転×継続改善」のビジネスです。
 > 本システムはその改善ループを自動で回すための道具です。
@@ -77,7 +79,15 @@ python -m muzaiko.cli report
 
 # まとめて実行
 python -m muzaiko.cli run
+
+# その他のコマンド
+python -m muzaiko.cli content    # SNS投稿ドラフト(out/sns_posts.md)
+python -m muzaiko.cli ledger     # 仕訳CSV(out/ledger.csv)
+python tools/simulate.py 30      # 30日運用シミュレーション(デモ・検証用)
 ```
+
+`report` 実行後は `out/dashboard.html` をブラウザで開くとKPIタイルと
+売上・粗利の推移グラフが見られます(データは日次で自動蓄積)。
 
 テスト実行: `python -m unittest discover tests`
 
@@ -216,6 +226,10 @@ muzaiko/
 │   ├── optimizer.py   # 自動最適化(価格実験・赤字停止・入替)
 │   ├── shipments.py   # 追跡番号取込・発送登録
 │   ├── aliexpress.py  # AliExpress Dropshipping APIクライアント
+│   ├── ebay.py        # eBay輸出チャネル(Sell API、JPY→USD換算)
+│   ├── content.py     # SNS投稿ドラフト生成(集客)
+│   ├── accounting.py  # 仕訳CSVエクスポート(確定申告用)
+│   ├── dashboard.py   # KPIダッシュボード(HTML)
 │   ├── notify.py      # Slack/Discord通知
 │   └── analytics.py   # 収益レポート
 ├── data/              # 仕入先フィード置き場
@@ -235,5 +249,7 @@ muzaiko/
 - [x] 自動価格実験によるリプライシング(`optimizer.py`)
 - [x] BASE チャネルアダプタ+一括出品CSVエクスポート
 - [x] 国内卸CSVの列マッピング・Shift_JIS対応(NETSEA/TopSellerのCSVをそのまま利用可)
+- [x] eBay輸出チャネルアダプタ(`muzaiko/ebay.py`、Sell API。要キー・要Sandboxテスト)
+- [x] SNS集客コンテンツ生成 / 仕訳CSV / KPIダッシュボード / 30日シミュレータ
 - [ ] 競合価格スクレイピングによる動的リプライシング
-- [ ] 楽天市場 / eBay チャネルアダプタ(Yahoo!は規約禁止のため対象外)
+- [ ] 楽天市場チャネルアダプタ(Yahoo!は規約禁止のため対象外)
