@@ -1,0 +1,46 @@
+# 毎日の自動運転: リサーチ→出品→同期→受注処理→レポート
+#
+# 有効化手順:
+#   1. リポジトリの Settings → Secrets and variables → Actions で
+#      Variables に MUZAIKO_ENABLED = true を設定
+#   2. Shopify 実運用時は Secrets に SHOPIFY_ACCESS_TOKEN を設定し、
+#      config.json をリポジトリに追加(channel.type = "shopify")
+name: muzaiko daily run
+
+on:
+  schedule:
+    - cron: "0 21 * * *"   # JST 6:00
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    if: vars.MUZAIKO_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run pipeline
+        env:
+          SHOPIFY_ACCESS_TOKEN: ${{ secrets.SHOPIFY_ACCESS_TOKEN }}
+        run: python -m muzaiko.cli run
+
+      - name: Upload report & purchase queue
+        uses: actions/upload-artifact@v4
+        with:
+          name: muzaiko-output-${{ github.run_number }}
+          path: out/
+
+      - name: Persist state
+        run: |
+          git config user.name "muzaiko-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -f state/ || true
+          git diff --cached --quiet || git commit -m "chore: update state [skip ci]"
+          git push

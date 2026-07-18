@@ -1,0 +1,31 @@
+{
+  "supplier": {
+    "type": "csv",
+    "feed_path": "data/sample_supplier.csv"
+  },
+  "channel": {
+    "type": "local",
+    "shopify_domain": "",
+    "shopify_token_env": "SHOPIFY_ACCESS_TOKEN",
+    "fee_rate": 0.10
+  },
+  "research": {
+    "max_listings": 20,
+    "max_cost": 8000,
+    "min_stock": 3,
+    "max_shipping_days": 21,
+    "min_expected_margin": 500
+  },
+  "pricing": {
+    "target_margin_rate": 0.35,
+    "min_margin_rate": 0.12,
+    "min_margin_jpy": 300,
+    "psychological_ending": 80
+  },
+  "listing": {
+    "use_llm": false,
+    "shop_name": "muzaiko store"
+  },
+  "state_dir": "state",
+  "output_dir": "out"
+}
