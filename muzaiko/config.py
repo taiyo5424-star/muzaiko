@@ -16,7 +16,7 @@ DEFAULTS: dict[str, Any] = {
         "type": "local",                    # local(ドライラン) | shopify
         "shopify_domain": "",               # 例: mystore.myshopify.com
         "shopify_token_env": "SHOPIFY_ACCESS_TOKEN",
-        "fee_rate": 0.10,                   # 販売手数料+決済手数料の想定合計率
+        "fee_rate": 0.07,                   # 販売+決済手数料の合計率(BASE無料プラン実勢。Shopify=0.04, eBay=0.18)
     },
     "research": {
         "max_listings": 20,                 # 同時出品数の上限

@@ -7,7 +7,7 @@
     "type": "local",
     "shopify_domain": "",
     "shopify_token_env": "SHOPIFY_ACCESS_TOKEN",
-    "fee_rate": 0.10
+    "fee_rate": 0.07
   },
   "research": {
     "max_listings": 20,
