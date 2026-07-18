@@ -133,14 +133,30 @@ class EbayChannel:
         pub = self._request("POST", f"/sell/inventory/v1/offer/{offer_id}/publish", {})
         return str(pub.get("listingId", offer_id))
 
+    def _offer_id_for(self, sku: str) -> str:
+        """offer_id はプロセスをまたいで失われるため、SKUからAPIで復元する。"""
+        if sku in self._offer_ids:
+            return self._offer_ids[sku]
+        try:
+            result = self._request(
+                "GET", f"/sell/inventory/v1/offer?sku={urllib.parse.quote(sku)}")
+            offers = result.get("offers", [])
+            offer_id = str(offers[0]["offerId"]) if offers else ""
+        except RuntimeError:
+            offer_id = ""
+        self._offer_ids[sku] = offer_id
+        return offer_id
+
     def update(self, listing: Listing) -> None:
+        if not listing.channel_id or listing.channel_id.startswith("local-"):
+            return  # 未出品のdraftに対してinventory_itemを作らない
         qty = listing.stock if listing.status == "active" else 0
         self._request("PUT", f"/sell/inventory/v1/inventory_item/{listing.sku}", {
             "product": {"title": listing.title[:80]},
             "condition": "NEW",
             "availability": {"shipToLocationAvailability": {"quantity": qty}},
         })
-        offer_id = self._offer_ids.get(listing.sku)
+        offer_id = self._offer_id_for(listing.sku)
         if offer_id:
             self._request("PUT", f"/sell/inventory/v1/offer/{offer_id}", {
                 "sku": listing.sku,
@@ -153,24 +169,55 @@ class EbayChannel:
                 "merchantLocationKey": self.location_key,
             })
 
+    @staticmethod
+    def _ship_to(o: dict) -> dict:
+        instr = o.get("fulfillmentStartInstructions") or [{}]
+        ship = instr[0].get("shippingStep", {}).get("shipTo", {})
+        addr = ship.get("contactAddress", {})
+        return {
+            "full_name": ship.get("fullName", ""),
+            "address": " ".join(filter(None, [addr.get("addressLine1", ""),
+                                              addr.get("addressLine2", "")])),
+            "city": addr.get("city", ""),
+            "province": addr.get("stateOrProvince", ""),
+            "zip": addr.get("postalCode", ""),
+            "country": addr.get("countryCode", ""),
+            "mobile_no": ship.get("primaryPhone", {}).get("phoneNumber", ""),
+        }
+
     def fetch_orders(self) -> list[Order]:
-        result = self._request(
-            "GET", "/sell/fulfillment/v1/order?filter=orderfulfillmentstatus:"
-                   "%7BNOT_STARTED%7CIN_PROGRESS%7D&limit=50")
         orders: list[Order] = []
-        for o in result.get("orders", []):
-            for li in o.get("lineItems", []):
-                usd = float(li.get("total", {}).get("value", 0))
-                jpy = usd * self.rate
-                orders.append(Order(
-                    order_id=f'{o.get("orderId", "")}-{li.get("lineItemId", "")}',
-                    sku=li.get("sku", ""),
-                    qty=int(li.get("quantity", 1)),
-                    sale_price=round(jpy / max(int(li.get("quantity", 1)), 1), 1),
-                    ordered_at=o.get("creationDate", ""),
-                    fee=round(jpy * self.fee_rate, 1),
-                ))
-        return orders
+        offset = 0
+        while True:
+            result = self._request(
+                "GET", "/sell/fulfillment/v1/order?filter=orderfulfillmentstatus:"
+                       f"%7BNOT_STARTED%7CIN_PROGRESS%7D&limit=200&offset={offset}")
+            page = result.get("orders", [])
+            for o in page:
+                for li in o.get("lineItems", []):
+                    usd = float(li.get("total", {}).get("value", 0))
+                    jpy = usd * self.rate
+                    orders.append(Order(
+                        order_id=f'{o.get("orderId", "")}-{li.get("lineItemId", "")}',
+                        sku=li.get("sku", ""),
+                        qty=int(li.get("quantity", 1)),
+                        sale_price=round(jpy / max(int(li.get("quantity", 1)), 1), 1),
+                        ordered_at=o.get("creationDate", ""),
+                        fee=round(jpy * self.fee_rate, 1),
+                        shipping_address=self._ship_to(o),
+                    ))
+            if len(page) < 200:
+                return orders
+            offset += 200
+
+    def fetch_cancelled_ids(self) -> list[str]:
+        try:
+            result = self._request(
+                "GET", "/sell/fulfillment/v1/order?filter=cancelstatus:"
+                       "%7BCANCELED%7D&limit=200")
+            return [str(o.get("orderId", "")) for o in result.get("orders", [])]
+        except RuntimeError:
+            return []
 
     def mark_shipped(self, order: Order) -> None:
         ebay_order_id = order.order_id.rsplit("-", 1)[0]

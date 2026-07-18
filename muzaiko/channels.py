@@ -32,6 +32,14 @@ class ChannelBase:
         """未取込の受注を返す。"""
         raise NotImplementedError
 
+    def fetch_cancelled_ids(self) -> list[str]:
+        """チャネル側でキャンセルされた注文ID(注文単位)を返す(対応チャネルのみ)。"""
+        return []
+
+    def ack_orders(self) -> None:
+        """取込済み受注の永続化完了後に呼ばれる。取込元の消費など(対応チャネルのみ)。"""
+        return None
+
     def mark_shipped(self, order: Order) -> None:
         """チャネル側に発送済み+追跡番号を登録する(対応チャネルのみ)。"""
         return None
@@ -62,9 +70,14 @@ class LocalChannel(ChannelBase):
         if not f.exists():
             return []
         raw = json.loads(f.read_text(encoding="utf-8"))
-        orders = [Order.from_dict(d) for d in raw]
-        f.unlink()  # 取り込んだら消費
-        return orders
+        # ファイルの削除は ack_orders(永続化成功後)まで遅延する。
+        # 途中でクラッシュしても受注が失われない。重複はorder_idで排除される。
+        return [Order.from_dict(d) for d in raw]
+
+    def ack_orders(self) -> None:
+        f = self.state_dir / "incoming_orders.json"
+        if f.exists():
+            f.unlink()
 
 
 class ShopifyChannel(ChannelBase):
@@ -118,20 +131,39 @@ class ShopifyChannel(ChannelBase):
     def update(self, listing: Listing) -> None:
         if not listing.channel_id or listing.channel_id.startswith("local-"):
             return
+        # 1. 出品状態(active/draft)。在庫0の売り越し防止はこの status 切替が担う
+        #    (在庫数そのものの同期は InventoryLevel API が必要なため未対応)
         status = "active" if listing.status == "active" else "draft"
-        payload = {
-            "product": {
-                "id": int(listing.channel_id),
-                "status": status,
-                "variants": [{"sku": listing.sku, "price": str(int(listing.price))}],
-            }
-        }
-        self._request("PUT", f"/products/{listing.channel_id}.json", payload)
+        self._request("PUT", f"/products/{listing.channel_id}.json", {
+            "product": {"id": int(listing.channel_id), "status": status},
+        })
+        # 2. 価格は既存バリアントを id 指定で更新する
+        #    (id なしの variants を product PUT に含めると新規バリアント扱いになる)
+        prod = self._request("GET", f"/products/{listing.channel_id}.json")
+        variants = prod.get("product", {}).get("variants", [])
+        target = next((v for v in variants if v.get("sku") == listing.sku),
+                      variants[0] if variants else None)
+        if target and str(target.get("price")) != str(int(listing.price)):
+            self._request("PUT", f"/variants/{target['id']}.json", {
+                "variant": {"id": target["id"], "price": str(int(listing.price))},
+            })
+
+    def _paged_orders(self, params: str) -> list[dict]:
+        """since_id ベースのページネーションで全件取得。"""
+        results: list[dict] = []
+        since_id = 0
+        while True:
+            page = self._request(
+                "GET", f"/orders.json?{params}&limit=250&since_id={since_id}"
+            ).get("orders", [])
+            results.extend(page)
+            if len(page) < 250:
+                return results
+            since_id = max(int(o["id"]) for o in page)
 
     def fetch_orders(self) -> list[Order]:
-        result = self._request("GET", "/orders.json?status=open&financial_status=paid")
         orders: list[Order] = []
-        for o in result.get("orders", []):
+        for o in self._paged_orders("status=open&financial_status=paid"):
             for item in o.get("line_items", []):
                 if not item.get("sku"):
                     continue
@@ -143,8 +175,12 @@ class ShopifyChannel(ChannelBase):
                     sale_price=price,
                     ordered_at=o.get("created_at", ""),
                     fee=round(price * int(item["quantity"]) * self.fee_rate, 1),
+                    shipping_address=o.get("shipping_address") or {},
                 ))
         return orders
+
+    def fetch_cancelled_ids(self) -> list[str]:
+        return [str(o["id"]) for o in self._paged_orders("status=cancelled&fields=id")]
 
 
     def mark_shipped(self, order: Order) -> None:
@@ -247,26 +283,40 @@ class BaseECChannel(ChannelBase):
             "visible": 1 if listing.status == "active" else 0,
         })
 
+    @staticmethod
+    def _ordered_at(value) -> str:
+        """BASEの ordered はUnixタイムスタンプ。ISO8601に変換する。"""
+        try:
+            from datetime import datetime
+            return datetime.fromtimestamp(int(value)).isoformat(timespec="seconds")
+        except (ValueError, TypeError, OSError):
+            return str(value or "")
+
     def fetch_orders(self) -> list[Order]:
-        result = self._request("GET", "/1/orders?limit=50")
         orders: list[Order] = []
-        for o in result.get("orders", []):
-            key = o.get("unique_key", "")
-            if not key:
-                continue
-            detail = self._request("GET", f"/1/orders/detail/{key}")
-            for item in detail.get("order", {}).get("order_items", []):
-                price = float(item.get("price", 0))
-                qty = int(item.get("amount", 1))
-                orders.append(Order(
-                    order_id=f"{key}-{item.get('order_item_id', '')}",
-                    sku=str(item.get("identifier") or item.get("item_id") or ""),
-                    qty=qty,
-                    sale_price=price,
-                    ordered_at=str(o.get("ordered", "")),
-                    fee=round(price * qty * self.fee_rate, 1),
-                ))
-        return orders
+        offset = 0
+        while True:
+            result = self._request("GET", f"/1/orders?limit=100&offset={offset}")
+            page = result.get("orders", [])
+            for o in page:
+                key = o.get("unique_key", "")
+                if not key:
+                    continue
+                detail = self._request("GET", f"/1/orders/detail/{key}")
+                for item in detail.get("order", {}).get("order_items", []):
+                    price = float(item.get("price", 0))
+                    qty = int(item.get("amount", 1))
+                    orders.append(Order(
+                        order_id=f"{key}-{item.get('order_item_id', '')}",
+                        sku=str(item.get("identifier") or item.get("item_id") or ""),
+                        qty=qty,
+                        sale_price=price,
+                        ordered_at=self._ordered_at(o.get("ordered")),
+                        fee=round(price * qty * self.fee_rate, 1),
+                    ))
+            if len(page) < 100:
+                return orders
+            offset += 100
 
 
 def build_channel(cfg: Config) -> ChannelBase:

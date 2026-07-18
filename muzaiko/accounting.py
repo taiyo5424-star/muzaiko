@@ -11,6 +11,7 @@ import csv
 from collections import defaultdict
 from pathlib import Path
 
+from .analytics import order_cogs
 from .models import Listing, Order
 
 
@@ -27,10 +28,17 @@ def export_ledger(
         if o.status == "cancelled":
             continue
         listing = listings.get(o.sku)
-        cogs = (listing.cost if listing else 0.0) * o.qty
-        profit = o.revenue - o.fee - cogs
+        cogs = order_cogs(o, listings)
         day = (o.ordered_at or "")[:10]
         month = day[:7]
+        if cogs is None:
+            # 原価不明: 仕入高・粗利を空欄にして「要確認」を明示(0円計上しない)
+            rows.append([day, o.order_id, o.sku,
+                         (listing.title[:30] if listing else o.sku),
+                         f"{o.revenue:.0f}", f"{o.fee:.0f}", "", "",
+                         f"{o.status}(原価要確認)"])
+            continue
+        profit = o.revenue - o.fee - cogs
         rows.append([
             day, o.order_id, o.sku,
             (listing.title[:30] if listing else o.sku),

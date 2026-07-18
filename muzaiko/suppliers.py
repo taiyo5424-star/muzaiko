@@ -99,8 +99,24 @@ class AliExpressSupplier(SupplierBase):
             os.environ.get("ALIEXPRESS_ACCESS_TOKEN", ""),
         )
         self.product_ids_path = product_ids_path
+        # fetch_products と place_order は別プロセスで走るため、SKU→バリアントの
+        # 対応はファイルに永続化する(誤バリアント発注防止の要)
+        self.sku_map_path = product_ids_path.parent / "aliexpress_sku_map.json"
         self.shipping_address = shipping_address or {}
         self._sku_map: dict[str, tuple[str, str]] = {}  # sku -> (product_id, sku_attr)
+
+    def _load_sku_map(self) -> None:
+        import json
+        if not self._sku_map and self.sku_map_path.exists():
+            raw = json.loads(self.sku_map_path.read_text(encoding="utf-8"))
+            self._sku_map = {k: tuple(v) for k, v in raw.items()}
+
+    def _save_sku_map(self) -> None:
+        import json
+        self.sku_map_path.write_text(
+            json.dumps({k: list(v) for k, v in self._sku_map.items()},
+                       ensure_ascii=False, indent=2),
+            encoding="utf-8")
 
     def fetch_products(self) -> list[SupplierProduct]:
         from .aliexpress import load_product_ids
@@ -127,18 +143,43 @@ class AliExpressSupplier(SupplierBase):
                     category=info.get("category_id", ""),
                     product_url=f"https://www.aliexpress.com/item/{pid}.html",
                 ))
+        if self._sku_map:
+            self._save_sku_map()
         return products
 
+    @staticmethod
+    def _to_ae_address(addr: dict) -> dict | None:
+        """チャネル由来の配送先(Shopify/eBay形式)をAliExpress形式に変換。
+        必須項目が欠けていれば None(=手動キュー行き)。"""
+        full_name = addr.get("full_name") or addr.get("name") or ""
+        address1 = addr.get("address") or addr.get("address1") or ""
+        if addr.get("address2"):
+            address1 = f"{address1} {addr['address2']}".strip()
+        result = {
+            "full_name": full_name,
+            "country": addr.get("country_code") or addr.get("country") or "JP",
+            "province": addr.get("province", ""),
+            "city": addr.get("city", ""),
+            "address": address1,
+            "zip": addr.get("zip") or addr.get("postal_code") or "",
+            "phone_country": "+81",
+            "mobile_no": (addr.get("mobile_no") or addr.get("phone") or "").replace("-", ""),
+        }
+        required = ("full_name", "province", "city", "address", "zip")
+        return result if all(result[k] for k in required) else None
+
     def place_order(self, sku: str, qty: int, shipping_address: dict) -> str:
+        self._load_sku_map()
         mapped = self._sku_map.get(sku)
-        if mapped is None and sku.startswith("AE-"):
-            parts = sku.split("-", 2)
-            mapped = (parts[1], "") if len(parts) >= 2 else None
         if mapped is None:
+            # バリアント(sku_attr)不明のまま発注すると誤った商品が届くため、
+            # 推測はせず手動キューに回す
+            print(f"  [warn] {sku}: SKUマップ未登録のため自動発注をスキップ"
+                  f"(research実行でマップが更新されます)")
             return ""
-        address = shipping_address or self.shipping_address
-        if not address:
-            return ""  # 配送先未設定なら手動キューに回す
+        address = self._to_ae_address(shipping_address or self.shipping_address)
+        if address is None:
+            return ""  # 配送先が不完全なら手動キューに回す
         pid, sku_attr = mapped
         return self.client.order_create(pid, sku_attr, qty, address)
 
@@ -152,5 +193,8 @@ def build_supplier(cfg: Config) -> SupplierBase:
             column_map=cfg["supplier"].get("column_map", {}),
         )
     if stype == "aliexpress":
-        return AliExpressSupplier(cfg.root / "data" / "aliexpress_products.txt")
+        return AliExpressSupplier(
+            cfg.root / "data" / "aliexpress_products.txt",
+            shipping_address=cfg["supplier"].get("shipping_address", {}),
+        )
     raise ValueError(f"未対応の仕入先タイプ: {stype}")

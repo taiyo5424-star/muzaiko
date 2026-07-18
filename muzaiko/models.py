@@ -74,6 +74,8 @@ class Order:
     customer_note: str = ""
     tracking_number: str = ""
     carrier: str = ""
+    cost_at_order: float = 0.0   # 受注時点の仕入原価スナップショット(遡及改変防止)
+    shipping_address: dict = field(default_factory=dict)  # チャネルから取得した配送先
 
     @property
     def revenue(self) -> float:

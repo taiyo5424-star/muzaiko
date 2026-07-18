@@ -68,6 +68,10 @@ class Optimizer:
         for sku, exp in experiments.items():
             if exp.get("status") != "running" or sku not in listings:
                 continue
+            # 停止中(在庫切れ等)の期間は販売ゼロが価格のせいに見えてしまうため、
+            # activeに戻るまで評価を保留する(実験はrunningのまま)
+            if listings[sku].status != "active":
+                continue
             started = _parse_dt(exp["started_at"])
             if not started or now - started < window:
                 continue
@@ -83,10 +87,14 @@ class Optimizer:
                       f"(売上レート {baseline_rev_rate:.0f}→{test_rev_rate:.0f}円/日)")
             else:
                 listing.price = exp["old_price"]
+                # 実験期間中に原価が上がっていた場合、旧価格が下限粗利を割ることが
+                # あるため、復元後に最低ラインへクランプする
+                clamped, _ = self.pricing.reprice(listing, listing.cost)
+                listing.price = max(exp["old_price"], clamped)
                 channel.update(listing)
                 exp["status"] = "rolled_back"
                 stats["exp_rolled_back"] += 1
-                print(f"  [実験撤回] {sku}: {exp['new_price']}円→{exp['old_price']}円に戻す "
+                print(f"  [実験撤回] {sku}: {exp['new_price']}円→{listing.price:.0f}円に戻す "
                       f"(売上レート {baseline_rev_rate:.0f}→{test_rev_rate:.0f}円/日)")
             exp["evaluated_at"] = now.isoformat(timespec="seconds")
 
@@ -124,7 +132,7 @@ class Optimizer:
             print(f"  [実験開始] {sku}: {old_price}円→{new_price}円 "
                   f"(直近{self.eval_window_days}日で{recent_qty}個販売)")
 
-        # --- 3. 赤字SKUの自動停止 ---
+        # --- 3. 赤字SKUの自動停止(受注時原価スナップショットで判定) ---
         if self.auto_delist_loss:
             for sku, listing in listings.items():
                 if listing.status != "active":
@@ -134,7 +142,8 @@ class Optimizer:
                 for o in orders.values():
                     if o.sku != sku or o.status == "cancelled":
                         continue
-                    profit += o.revenue - o.fee - listing.cost * o.qty
+                    cost = o.cost_at_order if o.cost_at_order > 0 else listing.cost
+                    profit += o.revenue - o.fee - cost * o.qty
                     qty += o.qty
                 if qty >= 2 and profit < 0:
                     listing.status = "delisted"

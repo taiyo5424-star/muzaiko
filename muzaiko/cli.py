@@ -46,8 +46,7 @@ def _export_listings_csv(listings, path: Path) -> None:
     """アクティブ出品を一括登録用CSVに書き出す(BASE/STORESの管理画面や
     各種一括登録ツールへ貼り付けて使う。API未接続のPhase 0でも出品作業を短縮)。"""
     rows = [l for l in listings.values() if l.status == "active"]
-    if not rows:
-        return
+    # アクティブ0件でもヘッダのみのCSVを書き出す(古いCSVが「販売可能」に見える事故を防ぐ)
     with open(path, "w", newline="", encoding="utf-8-sig") as f:  # Excelで文字化けしないBOM付き
         writer = csv.writer(f)
         writer.writerow(["sku", "title", "price", "stock", "category",
@@ -91,8 +90,13 @@ def cmd_research(root: str) -> None:
     selected = researcher.select(products)
     gen = ListingGenerator(cfg, pricing)
     listings = store.load_listings()
+    # max_listings はポートフォリオ全体の上限(既存の非delisted出品も枠を消費する)
+    current = sum(1 for l in listings.values() if l.status != "delisted")
+    slots = max(0, cfg["research"]["max_listings"] - current)
     new = 0
     for p, score in selected:
+        if new >= slots:
+            break
         if p.sku in listings:
             continue
         listings[p.sku] = gen.build(p, score)
@@ -111,6 +115,9 @@ def cmd_publish(root: str) -> None:
     published = 0
     for l in listings.values():
         if l.status != "draft":
+            continue
+        if l.stock <= 0:
+            print(f"  [skip] {l.sku}: 在庫0のため出品を見送り(次回syncで在庫復活を待つ)")
             continue
         l.channel_id = channel.publish(l)
         l.status = "active"
@@ -146,10 +153,11 @@ def cmd_orders(root: str) -> None:
     listings = store.load_listings()
     orders = store.load_orders()
     print("▶ 受注を処理中...")
-    stats = process_orders(orders, listings, channel, supplier, cfg.output_dir)
-    store.save_orders(orders)
+    stats = process_orders(orders, listings, channel, supplier, cfg.output_dir,
+                           save=lambda: store.save_orders(orders))
     print(f"✔ 取込{stats['imported']} 自動発注{stats['auto_ordered']} "
-          f"手動キュー{stats['queued']}")
+          f"手動キュー{stats['queued']} キャンセル{stats['cancelled']} "
+          f"エラー{stats['errors']}")
 
 
 def cmd_optimize(root: str) -> None:
@@ -196,11 +204,14 @@ def cmd_ledger(root: str) -> None:
 
 
 def _record_kpi(store: Store, listings, orders) -> None:
-    """日次KPIスナップショットを追記(同日分は上書き)。ダッシュボードの元データ。"""
-    sold = [o for o in orders.values() if o.status != "cancelled"]
+    """日次KPIスナップショットを追記(同日分は上書き)。ダッシュボードの元データ。
+    原価不明の受注は粗利集計から除外する(analytics.order_cogs と同一基準)。"""
+    from .analytics import order_cogs
+    sold = [o for o in orders.values()
+            if o.status != "cancelled" and order_cogs(o, listings) is not None]
     revenue = sum(o.revenue for o in sold)
     fees = sum(o.fee for o in sold)
-    cogs = sum((listings[o.sku].cost if o.sku in listings else 0.0) * o.qty for o in sold)
+    cogs = sum(order_cogs(o, listings) or 0.0 for o in sold)
     snapshot = {
         "date": datetime.now().date().isoformat(),
         "active_listings": sum(1 for l in listings.values() if l.status == "active"),

@@ -7,6 +7,17 @@ from .models import Listing, Order
 from .pricing import PricingEngine
 
 
+def order_cogs(o: Order, listings: dict[str, Listing]) -> float | None:
+    """受注の仕入原価。受注時スナップショットを優先し、
+    不明(未知SKUかつスナップショットなし)なら None を返す。
+    None の受注を粗利に混ぜると原価0円扱いで利益が過大計上されるため、
+    呼び出し側は集計から除外すること。"""
+    if o.cost_at_order > 0:
+        return o.cost_at_order * o.qty
+    listing = listings.get(o.sku)
+    return listing.cost * o.qty if listing else None
+
+
 def report(
     listings: dict[str, Listing],
     orders: dict[str, Order],
@@ -19,15 +30,18 @@ def report(
     lines.append("=" * 60)
     lines.append(f"出品数: {len(listings)}(アクティブ {len(active)})")
 
-    # --- 売上集計 ---
-    sold = [o for o in orders.values() if o.status != "cancelled"]
+    # --- 売上集計(原価不明の受注は粗利集計から除外して過大計上を防ぐ) ---
+    all_sold = [o for o in orders.values() if o.status != "cancelled"]
+    sold = []
+    unknown_cost = []
+    for o in all_sold:
+        (unknown_cost if order_cogs(o, listings) is None else sold).append(o)
     revenue = sum(o.revenue for o in sold)
     fees = sum(o.fee for o in sold)
     cogs = 0.0
     sku_sales: dict[str, dict] = defaultdict(lambda: {"qty": 0, "revenue": 0.0, "profit": 0.0})
     for o in sold:
-        listing = listings.get(o.sku)
-        cost = (listing.cost if listing else 0.0) * o.qty
+        cost = order_cogs(o, listings) or 0.0
         cogs += cost
         profit = o.revenue - o.fee - cost
         s = sku_sales[o.sku]
@@ -36,7 +50,9 @@ def report(
         s["profit"] += profit
 
     profit_total = revenue - fees - cogs
-    lines.append(f"受注件数: {len(sold)}")
+    lines.append(f"受注件数: {len(all_sold)}"
+                 + (f"(うち原価不明 {len(unknown_cost)}件は粗利集計から除外)"
+                    if unknown_cost else ""))
     lines.append(f"売上高:   {revenue:>12,.0f} 円")
     lines.append(f"手数料:   {fees:>12,.0f} 円")
     lines.append(f"仕入原価: {cogs:>12,.0f} 円")

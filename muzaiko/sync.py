@@ -29,6 +29,9 @@ def sync_listings(
                 channel.update(listing)
                 stats["paused"] += 1
                 print(f"  [停止] {sku}: 仕入先在庫切れ")
+            elif listing.status == "draft":
+                # 未出品candidateも在庫を0にして、publishでの売り越し出品を防ぐ
+                listing.stock = 0
             continue
 
         # 在庫復活
