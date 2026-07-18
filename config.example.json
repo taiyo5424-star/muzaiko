@@ -7,25 +7,47 @@
     "type": "local",
     "shopify_domain": "",
     "shopify_token_env": "SHOPIFY_ACCESS_TOKEN",
-    "fee_rate": 0.10
+    "fee_rate": 0.10,
+    "currency": "JPY",
+    "fx_rate": 1.0,
+    "max_days_to_ship": 10
   },
   "research": {
     "max_listings": 20,
     "max_cost": 8000,
     "min_stock": 3,
     "max_shipping_days": 21,
-    "min_expected_margin": 500
+    "min_expected_margin": 500,
+    "trend_keywords": [
+      "トレカ", "トレーディングカード", "カードゲーム",
+      "ホビー", "フィギュア", "ぬいぐるみ", "マスコット", "キーホルダー",
+      "アニメ", "キャラクター", "プラモデル", "限定",
+      "ポケモン", "ちいかわ", "サンリオ", "シルバニア"
+    ]
   },
   "pricing": {
     "target_margin_rate": 0.35,
     "min_margin_rate": 0.12,
     "min_margin_jpy": 300,
-    "psychological_ending": 80
+    "psychological_ending": 80,
+    "tariff_buffer_rate": 0.0
   },
   "listing": {
     "use_llm": false,
     "shop_name": "muzaiko store"
   },
   "state_dir": "state",
-  "output_dir": "out"
+  "output_dir": "out",
+
+  "_examples": {
+    "_comment": "チャネル別の設定例。使う場合は channel / research / pricing に上書きコピーする",
+    "shopee_singapore": {
+      "channel": { "type": "shopee_export", "fee_rate": 0.11, "currency": "SGD", "fx_rate": 0.0087, "max_days_to_ship": 10 },
+      "research": { "max_shipping_days": 10 }
+    },
+    "ebay_us_ddp": {
+      "channel": { "fee_rate": 0.145, "currency": "USD", "fx_rate": 0.0062 },
+      "pricing": { "tariff_buffer_rate": 0.10 }
+    }
+  }
 }

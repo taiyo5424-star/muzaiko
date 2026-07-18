@@ -2,9 +2,13 @@
 
 - LocalChannel: ドライラン。出品は out/ にHTML/JSONとして書き出し、受注は state/incoming_orders.json から取り込む。
 - ShopifyChannel: Shopify Admin REST API。SHOPIFY_ACCESS_TOKEN 設定で実出品・実受注取得。
+- ShopeeExportChannel: Shopee(東南アジア)輸出向け。セラーセンターの一括アップロード用CSVを生成する。
+  Shopeeの無在庫はプレオーダー(発送期限を最大10日に延長)を設定するのが正規ルート。
+  発送期限(DTS)超過や在庫切れキャンセルはペナルティ対象のため、sync との併用が前提。
 """
 from __future__ import annotations
 
+import csv
 import json
 import urllib.error
 import urllib.request
@@ -14,6 +18,9 @@ from .config import Config
 from .models import Listing, Order
 
 API_VERSION = "2024-07"
+
+# Shopeeの通常発送期限(営業日)。これを超えるリードタイムはプレオーダー設定にする。
+SHOPEE_STANDARD_DTS_DAYS = 2
 
 
 class ChannelBase:
@@ -57,6 +64,75 @@ class LocalChannel(ChannelBase):
         raw = json.loads(f.read_text(encoding="utf-8"))
         orders = [Order.from_dict(d) for d in raw]
         f.unlink()  # 取り込んだら消費
+        return orders
+
+
+class ShopeeExportChannel(ChannelBase):
+    """Shopee輸出用チャネル。
+
+    Shopee Open Platform APIは法人審査+パートナー契約が必要なため、
+    個人セラーでもすぐ使える「セラーセンター一括アップロードCSV」を生成する。
+    out/shopee/mass_upload.csv をセラーセンターの一括出品ツールに読み込ませる運用。
+    価格は fx_rate で現地通貨に換算して出力する。
+    """
+
+    def __init__(self, output_dir: Path, state_dir: Path,
+                 currency: str, fx_rate: float, max_days_to_ship: int):
+        self.dir = output_dir / "shopee"
+        self.listings_dir = self.dir / "listings"
+        self.listings_dir.mkdir(parents=True, exist_ok=True)
+        self.state_dir = state_dir
+        self.currency = currency
+        self.fx_rate = fx_rate
+        self.max_days_to_ship = max_days_to_ship
+
+    def _row(self, listing: Listing) -> dict:
+        lead = listing.shipping_days or SHOPEE_STANDARD_DTS_DAYS
+        days_to_ship = min(lead, self.max_days_to_ship)
+        if lead > self.max_days_to_ship:
+            print(f"  [警告] {listing.sku}: リードタイム{lead}日はShopeeプレオーダー上限"
+                  f"({self.max_days_to_ship}日)超。DTS違反ペナルティのリスクがあります")
+        return {
+            "sku": listing.sku,
+            "product_name": listing.title,
+            "description": listing.description,
+            f"price_{self.currency.lower()}": round(listing.price * self.fx_rate, 2),
+            "stock": listing.stock if listing.status == "active" else 0,
+            "category": listing.category,
+            "image_url": listing.image_url,
+            "days_to_ship": days_to_ship,
+            "pre_order": "yes" if lead > SHOPEE_STANDARD_DTS_DAYS else "no",
+        }
+
+    def _rebuild_csv(self) -> None:
+        rows = []
+        for f in sorted(self.listings_dir.glob("*.json")):
+            rows.append(json.loads(f.read_text(encoding="utf-8")))
+        if not rows:
+            return
+        with open(self.dir / "mass_upload.csv", "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(rows)
+
+    def publish(self, listing: Listing) -> str:
+        row = self._row(listing)
+        (self.listings_dir / f"{listing.sku}.json").write_text(
+            json.dumps(row, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._rebuild_csv()
+        return f"shopee-{listing.sku}"
+
+    def update(self, listing: Listing) -> None:
+        self.publish(listing)
+
+    def fetch_orders(self) -> list[Order]:
+        # セラーセンターからエクスポートした受注を state/incoming_orders.json に置く運用
+        f = self.state_dir / "incoming_orders.json"
+        if not f.exists():
+            return []
+        raw = json.loads(f.read_text(encoding="utf-8"))
+        orders = [Order.from_dict(d) for d in raw]
+        f.unlink()
         return orders
 
 
@@ -149,5 +225,13 @@ def build_channel(cfg: Config) -> ChannelBase:
             cfg["channel"]["shopify_domain"],
             cfg.shopify_token(),
             cfg["channel"]["fee_rate"],
+        )
+    if ctype == "shopee_export":
+        return ShopeeExportChannel(
+            cfg.output_dir,
+            cfg.state_dir,
+            cfg["channel"]["currency"],
+            cfg["channel"]["fx_rate"],
+            cfg["channel"]["max_days_to_ship"],
         )
     raise ValueError(f"未対応のチャネルタイプ: {ctype}")

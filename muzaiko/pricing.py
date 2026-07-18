@@ -14,7 +14,8 @@ class PricingEngine:
         self.min_margin_rate = p["min_margin_rate"]
         self.min_margin_jpy = p["min_margin_jpy"]
         self.ending = p["psychological_ending"]
-        self.fee_rate = cfg["channel"]["fee_rate"]
+        # DDP(関税セラー負担)向けの上乗せは手数料と同じ扱いで価格に織り込む
+        self.fee_rate = cfg["channel"]["fee_rate"] + p["tariff_buffer_rate"]
 
     def _round_psych(self, price: float) -> int:
         """980円/2,980円のような心理的価格に切り上げ丸め。"""

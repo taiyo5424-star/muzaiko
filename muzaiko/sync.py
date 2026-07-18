@@ -37,10 +37,11 @@ def sync_listings(
             stats["reactivated"] += 1
             print(f"  [再開] {sku}: 在庫復活({p.stock})")
 
-        # 在庫数の追従
+        # 在庫数・リードタイムの追従
         if listing.stock != p.stock:
             listing.stock = p.stock
             stats["stock_updated"] += 1
+        listing.shipping_days = p.shipping_days
 
         # 原価変動に応じたリプライシング
         new_price, reason = pricing.reprice(listing, p.landed_cost)

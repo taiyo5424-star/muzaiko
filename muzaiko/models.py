@@ -49,6 +49,7 @@ class Listing:
     score: float = 0.0           # リサーチ時のスコア
     image_url: str = ""
     category: str = ""
+    shipping_days: int = 0       # 仕入先リードタイム(発送期限・プレオーダー判定に使用)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

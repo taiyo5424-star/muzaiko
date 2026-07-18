@@ -105,4 +105,5 @@ class ListingGenerator:
             score=score,
             image_url=p.image_url,
             category=p.category,
+            shipping_days=p.shipping_days,
         )

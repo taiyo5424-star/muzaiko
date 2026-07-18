@@ -14,6 +14,7 @@ class Researcher:
         self.min_stock = r["min_stock"]
         self.max_shipping_days = r["max_shipping_days"]
         self.min_expected_margin = r["min_expected_margin"]
+        self.trend_keywords = r["trend_keywords"]
         self.pricing = pricing
 
     def _passes_filters(self, p: SupplierProduct) -> tuple[bool, str]:
@@ -29,14 +30,24 @@ class Researcher:
             return False, f"期待粗利{margin:.0f}円が下限未満"
         return True, ""
 
+    def trend_hits(self, p: SupplierProduct) -> list[str]:
+        """タイトル/カテゴリに一致したトレンドキーワードを返す。"""
+        text = f"{p.title} {p.category}"
+        return [kw for kw in self.trend_keywords if kw and kw in text]
+
     def score(self, p: SupplierProduct) -> float:
-        """0-100点。粗利額を主軸に、在庫の厚さと配送速度で加点。"""
+        """0-100点。粗利額を主軸に、在庫の厚さ・配送速度・トレンド適合で加点。
+
+        トレンド加点は越境ECの売れ筋(トレカ/ホビー/アニメの推し活・
+        コレクター消費)に合致する商品を優先するためのもの。
+        """
         price = self.pricing.initial_price(p.landed_cost)
         margin = self.pricing.margin(price, p.landed_cost)
-        margin_score = min(margin / 2000, 1.0) * 60          # 粗利2,000円で満点
-        stock_score = min(p.stock / 50, 1.0) * 20            # 在庫50で満点
-        speed_score = max(0.0, 1 - p.shipping_days / self.max_shipping_days) * 20
-        return round(margin_score + stock_score + speed_score, 1)
+        margin_score = min(margin / 2000, 1.0) * 50          # 粗利2,000円で満点
+        stock_score = min(p.stock / 50, 1.0) * 15            # 在庫50で満点
+        speed_score = max(0.0, 1 - p.shipping_days / self.max_shipping_days) * 15
+        trend_score = min(len(self.trend_hits(p)) / 2, 1.0) * 20  # 2キーワード一致で満点
+        return round(margin_score + stock_score + speed_score + trend_score, 1)
 
     def select(self, products: list[SupplierProduct]) -> list[tuple[SupplierProduct, float]]:
         """フィルタ→スコア降順で上位を返す。"""

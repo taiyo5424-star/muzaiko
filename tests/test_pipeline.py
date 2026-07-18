@@ -64,6 +64,58 @@ class PipelineTest(unittest.TestCase):
         cmd_report(root)
         self.assertTrue((cfg.output_dir / "report.txt").exists())
 
+    def test_trend_keyword_boosts_score(self):
+        """推し活・コレクター系キーワードに一致する商品はスコアが上がる。"""
+        from muzaiko.models import SupplierProduct
+        from muzaiko.research import Researcher
+
+        cfg = Config.load(self.tmp)
+        researcher = Researcher(cfg, PricingEngine(cfg))
+        base = dict(cost=1000, stock=50, shipping_cost=300, shipping_days=7)
+        plain = SupplierProduct(sku="P-1", title="ステンレスタンブラー 500ml", **base)
+        trend = SupplierProduct(sku="P-2", title="シルバニアファミリー 限定 ぬいぐるみ",
+                                category="ホビー", **base)
+        self.assertGreater(researcher.score(trend), researcher.score(plain))
+        self.assertGreaterEqual(len(researcher.trend_hits(trend)), 2)
+        self.assertEqual(researcher.trend_hits(plain), [])
+
+    def test_tariff_buffer_raises_price_for_ddp(self):
+        """関税バッファ(DDP)を設定すると価格に織り込まれる。"""
+        cfg_plain = Config.load(self.tmp)
+        (self.tmp / "config.json").write_text(
+            json.dumps({"pricing": {"tariff_buffer_rate": 0.10}}), encoding="utf-8")
+        cfg_ddp = Config.load(self.tmp)
+        p_plain = PricingEngine(cfg_plain)
+        p_ddp = PricingEngine(cfg_ddp)
+        for cost in (1000, 5000):
+            self.assertGreater(p_ddp.initial_price(cost), p_plain.initial_price(cost))
+
+    def test_shopee_export_channel_writes_mass_upload_csv(self):
+        """shopee_export チャネルは現地通貨換算済みの一括アップロードCSVを出力する。"""
+        (self.tmp / "config.json").write_text(json.dumps({
+            "channel": {"type": "shopee_export", "currency": "SGD", "fx_rate": 0.0087},
+        }), encoding="utf-8")
+        root = str(self.tmp)
+        cmd_research(root)
+        cmd_publish(root)
+
+        cfg = Config.load(self.tmp)
+        csv_path = cfg.output_dir / "shopee" / "mass_upload.csv"
+        self.assertTrue(csv_path.exists())
+        import csv as csv_mod
+        with open(csv_path, encoding="utf-8-sig") as f:
+            rows = list(csv_mod.DictReader(f))
+        self.assertGreater(len(rows), 0)
+        store = Store(cfg.state_dir)
+        listings = store.load_listings()
+        for row in rows:
+            listing = listings[row["sku"]]
+            self.assertAlmostEqual(
+                float(row["price_sgd"]), round(listing.price * 0.0087, 2))
+            self.assertLessEqual(int(row["days_to_ship"]), 10)
+            if listing.shipping_days > 2:
+                self.assertEqual(row["pre_order"], "yes")
+
 
 if __name__ == "__main__":
     unittest.main()
